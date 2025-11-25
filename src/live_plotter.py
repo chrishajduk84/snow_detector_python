@@ -12,6 +12,10 @@ from typing import Optional, Callable, Tuple, List
 import threading
 import queue
 
+# Constants for dB conversion
+LOG_EPSILON = 1e-6  # Small value to avoid log(0)
+DB_CONVERSION_FACTOR = 20  # 20*log10 for magnitude to dB conversion
+
 
 class LivePlotter:
     """Real-time plotter for radar data visualization.
@@ -147,13 +151,15 @@ class LivePlotter:
 
         # Range profile: FFT of first chirp
         range_fft = np.fft.fft(data[0])
-        range_profile = 20 * np.log10(np.abs(range_fft[: len(range_fft) // 2]) + 1e-6)
+        range_profile = DB_CONVERSION_FACTOR * np.log10(
+            np.abs(range_fft[: len(range_fft) // 2]) + LOG_EPSILON
+        )
 
         # Range-Doppler map: 2D FFT
         range_fft_all = np.fft.fft(data, axis=1)
         doppler_fft = np.fft.fftshift(np.fft.fft(range_fft_all, axis=0), axes=0)
-        rd_map = 20 * np.log10(
-            np.abs(doppler_fft[:, : doppler_fft.shape[1] // 2].T) + 1e-6
+        rd_map = DB_CONVERSION_FACTOR * np.log10(
+            np.abs(doppler_fft[:, : doppler_fft.shape[1] // 2].T) + LOG_EPSILON
         )
 
         return time_domain, range_profile, rd_map
@@ -260,12 +266,21 @@ class SimulatedRadarPlotter:
     This is useful when the actual radar hardware is not available.
     """
 
+    # Simulation constants
+    DEFAULT_SIGNAL_AMPLITUDE = 500  # Amplitude of simulated target signal
+    DEFAULT_NOISE_AMPLITUDE = 50  # Amplitude of noise
+    DEFAULT_RANGE_VARIATION = 0.1  # Range variation in meters
+    DEFAULT_OSCILLATION_FREQUENCY = 0.5  # Hz - how fast target oscillates
+    DEFAULT_OSCILLATION_PERIOD = 100  # Frames per oscillation cycle
+    DEFAULT_FRAME_RATE_HZ = 20  # Simulated frame rate
+
     def __init__(
         self,
         num_samples: int = 64,
         num_chirps: int = 16,
         plot_type: str = "all",
         update_interval_ms: int = 50,
+        frame_rate_hz: float = 20.0,
     ):
         """Initialize the simulated radar plotter.
 
@@ -274,6 +289,7 @@ class SimulatedRadarPlotter:
             num_chirps: Number of chirps per frame.
             plot_type: Type of plot to display.
             update_interval_ms: Update interval in milliseconds.
+            frame_rate_hz: Simulated frame rate in Hz (default: 20.0).
         """
         self.num_samples = num_samples
         self.num_chirps = num_chirps
@@ -288,6 +304,7 @@ class SimulatedRadarPlotter:
         self._target_distance = 5.0  # Simulated target distance (meters)
         self._target_velocity = 0.5  # Simulated target velocity (m/s)
         self._frame_count = 0
+        self._frame_interval_s = 1.0 / frame_rate_hz
 
     def _generate_simulated_frame(self) -> np.ndarray:
         """Generate a simulated radar frame.
@@ -303,9 +320,6 @@ class SimulatedRadarPlotter:
         bandwidth = 1.5e9  # Bandwidth
         chirp_time = 50e-6  # Chirp duration
 
-        # Range resolution
-        range_res = c / (2 * bandwidth)
-
         # Simulate IF signal
         frame = np.zeros((1, self.num_chirps, self.num_samples), dtype=np.complex128)
 
@@ -313,8 +327,9 @@ class SimulatedRadarPlotter:
             t = np.linspace(0, chirp_time, self.num_samples)
 
             # Target range (slowly varying)
-            target_range = self._target_distance + 0.1 * np.sin(
-                2 * np.pi * 0.5 * self._frame_count / 100
+            target_range = self._target_distance + self.DEFAULT_RANGE_VARIATION * np.sin(
+                2 * np.pi * self.DEFAULT_OSCILLATION_FREQUENCY * self._frame_count
+                / self.DEFAULT_OSCILLATION_PERIOD
             )
 
             # Beat frequency
@@ -325,7 +340,7 @@ class SimulatedRadarPlotter:
 
             # IF signal with noise
             signal = (
-                500
+                self.DEFAULT_SIGNAL_AMPLITUDE
                 * np.exp(
                     1j
                     * 2
@@ -333,7 +348,9 @@ class SimulatedRadarPlotter:
                     * (f_beat * t + f_doppler * chirp_idx * chirp_time)
                 )
             )
-            noise = 50 * (np.random.randn(self.num_samples) + 1j * np.random.randn(self.num_samples))
+            noise = self.DEFAULT_NOISE_AMPLITUDE * (
+                np.random.randn(self.num_samples) + 1j * np.random.randn(self.num_samples)
+            )
             frame[0, chirp_idx, :] = signal + noise
 
         return np.real(frame).astype(np.float32)
@@ -345,7 +362,7 @@ class SimulatedRadarPlotter:
         while self._running:
             frame = self._generate_simulated_frame()
             self.plotter.push_frame(frame)
-            time.sleep(0.05)  # 20 Hz frame rate
+            time.sleep(self._frame_interval_s)
 
     def start(self) -> None:
         """Start the simulated radar plotter."""

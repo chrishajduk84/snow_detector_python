@@ -28,8 +28,23 @@ Examples:
 import argparse
 import sys
 import signal
+from typing import Callable
 
 from src.live_plotter import LivePlotter, SimulatedRadarPlotter
+
+
+def setup_signal_handler(stop_callback: Callable[[], None]) -> None:
+    """Set up signal handler for graceful shutdown.
+
+    Args:
+        stop_callback: Function to call when shutdown signal is received.
+    """
+    def handler(signum, frame):
+        print("\nShutting down...")
+        stop_callback()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, handler)
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -121,12 +136,7 @@ def run_with_hardware(args: argparse.Namespace) -> None:
     )
 
     # Set up signal handler for graceful shutdown
-    def signal_handler(signum, frame):
-        print("\nShutting down...")
-        plotter.stop()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
+    setup_signal_handler(plotter.stop)
 
     print("DEMO-BGT60TR13C Radar Data Visualization")
     print("=" * 40)
@@ -180,12 +190,7 @@ def run_with_simulation(args: argparse.Namespace) -> None:
     )
 
     # Set up signal handler for graceful shutdown
-    def signal_handler(signum, frame):
-        print("\nShutting down...")
-        sim_plotter.stop()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
+    setup_signal_handler(sim_plotter.stop)
 
     try:
         sim_plotter.start()

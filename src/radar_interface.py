@@ -69,11 +69,17 @@ class RadarInterface:
             True if connection was successful, False otherwise.
         """
         try:
-            self.device = RadarIfxAvian(self.config)
-            self._is_connected = True
-            return True
+            device = RadarIfxAvian(self.config)
+            if device is not None:
+                self.device = device
+                self._is_connected = True
+                return True
+            else:
+                self._is_connected = False
+                return False
         except Exception as e:
             print(f"Failed to connect to radar: {e}")
+            self.device = None
             self._is_connected = False
             return False
 
