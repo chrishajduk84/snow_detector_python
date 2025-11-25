@@ -84,7 +84,7 @@ class LivePlotter:
     def _setup_subplot_types(self) -> None:
         """Configure each subplot based on plot type."""
         if self.plot_type == "time_domain" or self.plot_type == "all":
-            ax_idx = 0 if self.plot_type == "time_domain" else 0
+            ax_idx = 0
             ax = self.axes[ax_idx]
             ax.set_title("Time Domain Signal")
             ax.set_xlabel("Sample")
