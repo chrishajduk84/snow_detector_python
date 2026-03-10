@@ -1,1 +1,1 @@
-{"class_names": ["aluminum", "glass", "marble", "stainless_steel", "wood"], "model_type": "paper_cnn"}
+{"class_names": ["aluminum", "glass", "marble", "stainless_steel", "wood"], "model_type": "paper_cnn", "num_rx": 3, "num_samples": 64}

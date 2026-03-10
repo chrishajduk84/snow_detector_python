@@ -992,14 +992,15 @@ class MaterialDataCollector:
         self.save_dir.mkdir(exist_ok=True)
         
         # Radar configuration optimized for material sensing
+        # Using full 5 GHz bandwidth (58-63 GHz) for ~3 cm range resolution
         self.config = Avian.DeviceConfig(
-            sample_rate_Hz = 1_000_000,
+            sample_rate_Hz = 2_000_000,
             rx_mask = 7,                      # All 3 RX antennas
             tx_mask = 1,
             if_gain_dB = 33,
             tx_power_level = 31,
-            start_frequency_Hz = 60e9,
-            end_frequency_Hz = 61.5e9,
+            start_frequency_Hz = 58e9,
+            end_frequency_Hz = 63e9,
             num_chirps_per_frame = 64,        # Fewer chirps for faster capture
             num_samples_per_chirp = 128,      # More samples for better range resolution
             chirp_repetition_time_s = 0.0005,
@@ -1214,14 +1215,15 @@ class MaterialClassifier:
             print(f"Loaded sklearn model: {model_type}")
         
         # Radar configuration (must match training config)
+        # Using full 5 GHz bandwidth (58-63 GHz) for ~3 cm range resolution
         self.config = Avian.DeviceConfig(
-            sample_rate_Hz = 1_000_000,
+            sample_rate_Hz = 2_000_000,
             rx_mask = 7,
             tx_mask = 1,
             if_gain_dB = 33,
             tx_power_level = 31,
-            start_frequency_Hz = 60e9,
-            end_frequency_Hz = 61.5e9,
+            start_frequency_Hz = 58e9,
+            end_frequency_Hz = 63e9,
             num_chirps_per_frame = 64,
             num_samples_per_chirp = 128,
             chirp_repetition_time_s = 0.0005,
@@ -1260,16 +1262,33 @@ class MaterialClassifier:
         self.model.eval()
     
     def _extract_raw_frame(self, frame):
-        """Extract raw frame for all deep learning models."""
-        # Take first chirp from each RX channel
-        raw = frame[:, :, 0]  # (num_rx, num_samples_per_chirp)
+        """
+        Extract raw frame for all deep learning models.
+        Must match MaterialDataCollector._extract_raw_frame preprocessing:
+        - Average across all chirps for better SNR
+        - Apply Range-FFT (for complex data)
+        - Remove DC offset
+        """
+        # Average across ALL chirps for better SNR (matches collector)
+        # frame shape: (num_rx, num_samples_per_chirp, num_chirps_per_frame)
+        raw = np.mean(frame, axis=2)  # (num_rx, num_samples_per_chirp)
         
         if np.iscomplexobj(raw):
+            # Apply Hanning window to reduce spectral leakage
+            window = np.hanning(raw.shape[1])
+            raw_windowed = raw * window
+            
+            # Range FFT - converts time-domain to range-domain
+            range_fft = np.fft.fft(raw_windowed, axis=1)
+            
+            # Take magnitude, keep only positive frequencies (actual range bins)
+            raw = np.abs(range_fft[:, :raw.shape[1]//2])
+        else:
             raw = np.abs(raw)
         
-        # Standardize each channel
+        # Remove DC offset from each channel
         for ch in range(raw.shape[0]):
-            raw[ch] = (raw[ch] - raw[ch].mean()) / (raw[ch].std() + 1e-8)
+            raw[ch] = raw[ch] - raw[ch].mean()
         
         return raw.astype(np.float32)
         
@@ -1331,8 +1350,11 @@ class MaterialClassifier:
                     
                     # Initialize PyTorch model on first frame (sklearn already loaded)
                     if self.model is None:
-                        self._init_model(num_rx=num_rx, num_samples=num_samples)
-                        print(f"Model initialized: {self.model_type}")
+                        # Use saved dimensions from training if available, else fall back to live frame dims
+                        init_rx = getattr(self, '_saved_num_rx', num_rx)
+                        init_samples = getattr(self, '_saved_num_samples', num_samples)
+                        self._init_model(num_rx=init_rx, num_samples=init_samples)
+                        print(f"Model initialized: {self.model_type} (input: {init_rx}x{init_samples})")
                     
                     # Extract data and predict based on model type
                     if self.is_sklearn_model:
@@ -1346,6 +1368,10 @@ class MaterialClassifier:
                     else:
                         # Raw time-domain for ALL deep learning models
                         raw_data = self._extract_raw_frame(frame)
+                        
+                        # Standardize each channel (matches training dataset preprocessing)
+                        for ch in range(raw_data.shape[0]):
+                            raw_data[ch] = (raw_data[ch] - raw_data[ch].mean()) / (raw_data[ch].std() + 1e-8)
                         
                         if self.is_2d_model:
                             # Shape: (1, 1, num_rx, num_samples) for Conv2d
@@ -1679,6 +1705,8 @@ def main():
         with open('class_names.json', 'w') as f:
             json.dump({'class_names': dataset.class_names, 'model_type': model_type}, f)
         
+        # Will update with actual dimensions after inspecting data
+        
         num_classes = len(dataset.class_names)
         print(f"Number of classes: {num_classes}")
         print(f"Total samples: {len(dataset)}")
@@ -1757,6 +1785,15 @@ def main():
             sample, _ = dataset[0]
             _, num_rx, num_samples = sample.shape  # (1, num_rx, num_samples)
             print(f"Input shape: (1, {num_rx}, {num_samples})")
+            
+            # Save input dimensions for inference
+            with open('class_names.json', 'w') as f:
+                json.dump({
+                    'class_names': dataset.class_names,
+                    'model_type': model_type,
+                    'num_rx': int(num_rx),
+                    'num_samples': int(num_samples)
+                }, f)
             
             # For 1D models, we need the flattened size
             input_size_1d = num_rx * num_samples
@@ -1838,6 +1875,10 @@ def main():
         
         print(f"Using model type: {model_type}")
         
+        # Extract saved input dimensions (from training)
+        saved_num_rx = config.get('num_rx', None) if isinstance(config, dict) else None
+        saved_num_samples = config.get('num_samples', None) if isinstance(config, dict) else None
+        
         # Check for appropriate model file
         if model_type in TRADITIONAL_ML_MODELS:
             if not Path('best_material_model.joblib').exists():
@@ -1851,6 +1892,12 @@ def main():
                 print(f"Please train a {model_type} model first.")
                 return
             classifier = MaterialClassifier('best_material_model.pth', class_names, model_type)
+        
+        # Pass saved dimensions from training so the model is created with matching sizes
+        if saved_num_rx is not None:
+            classifier._saved_num_rx = saved_num_rx
+        if saved_num_samples is not None:
+            classifier._saved_num_samples = saved_num_samples
         
         classifier.run_live()
         
