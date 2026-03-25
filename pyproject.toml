@@ -1,12 +1,12 @@
 [tool.poetry]
 name = "snow-detector-python"
-version = "0.1.0"
-description = "A starter application for interfacing with the Infineon DEMO-BGT60TR13C radar development board with live visualization"
+version = "0.2.0"
+description = "Radar dielectric profiler — estimate material properties (εr, tan δ) per range bin using FMCW radar"
 authors = ["Chris Hajduk <chrishajduk84@gmail.com>"]
 readme = "README.md"
 repository = "https://github.com/chrishajduk84/snow_detector_python"
 license = "MIT"
-keywords = ["radar", "infineon", "bgt60tr13c", "snow-detection", "visualization"]
+keywords = ["radar", "infineon", "bgt60tr13c", "iwr1443", "dielectric", "material-sensing"]
 packages = [{include = "src"}]
 
 [virtualenvs]
@@ -15,16 +15,19 @@ in-project = true
 [tool.poetry.dependencies]
 python = ">=3.11, <3.14"
 numpy = "^2.0.0"
-matplotlib = "^3.5.0"  #{path = "matplotlib-3.10.8-cp311-cp311-win_arm64.whl"}"
+matplotlib = "^3.5.0"
 fonttools = {path = "../fonttools", develop=true}
-# Local wheel file for ifxdaq (from Infineon Radar Development Kit)
-# Place the .whl file in the 'wheels' folder relative to pyproject.toml
 ifxdaq = {path = "../ifxdaq"}
 ifxradarsdk = {path = "wheels/ifxradarsdk-3.6.4-py3-none-any.whl"}
 scipy = "^1.16.3"
 torch = {version = "2.11.0.dev20260105", source = "torch-nightly"}
 scikit-learn = "^1.8.0"
 seaborn = "^0.13.2"
+h5py = "^3.10.0"
+pyserial = "^3.5"
+
+[tool.poetry.scripts]
+radar-profiler = "main:main"
 
 [tool.poetry.group.dev.dependencies]
 black = "^22.0.0"

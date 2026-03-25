@@ -1,185 +1,101 @@
-# Snow Detector Python
+# Radar Dielectric Profiler
 
-A starter application for interfacing with the Infineon DEMO-BGT60TR13C radar development board. This application provides live visualization of raw radar measurements.
+Estimate per-range-bin material properties (**εr**, **tan δ**) from FMCW radar
+measurements. Supports Infineon BGT60TR13C and TI IWR1443BOOST sensors.
 
 ## Features
 
-- Interface with the DEMO-BGT60TR13C radar board via the Infineon Radar SDK
-- Real-time visualization of radar data with multiple plot types:
-  - **Time Domain**: Raw IF signal visualization
-  - **Range Profile**: FFT-based range detection
-  - **Range-Doppler Map**: 2D FFT for simultaneous range and velocity detection
-- Simulation mode for development and testing without hardware
-- Configurable radar parameters (samples, chirps, update rate)
+- **Dual-sensor support** — BGT60TR13C (60 GHz, 5 GHz BW) and IWR1443BOOST (77 GHz, 4 GHz BW)
+- **1D U-Net model** — predicts εr, tan δ, and material presence at every range bin
+- **Transfer-matrix simulator** — generates unlimited synthetic training data
+- **HDF5 storage** — labeled sessions with complex I/Q and ground-truth layer stackups
+- **Unified CLI** — `collect`, `simulate`, `train`, `predict`, `visualize` subcommands
 
 ## Prerequisites
 
-### Hardware
-- [Infineon DEMO-BGT60TR13C](https://www.infineon.com/cms/en/product/evaluation-boards/demo-bgt60tr13c/) radar development kit
-- USB connection to host computer
+### Hardware (at least one)
+- [Infineon DEMO-BGT60TR13C](https://www.infineon.com/cms/en/product/evaluation-boards/demo-bgt60tr13c/) + USB
+- [TI IWR1443BOOST](https://www.ti.com/tool/IWR1443BOOST) + UART (two COM ports)
 
 ### Software
-- Python 3.8 or higher
-- Infineon Radar Development Kit (RDK) with the `ifxdaq` package
+- Python 3.11–3.13
+- Poetry (`pip install poetry`)
 
 ## Installation
 
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/chrishajduk84/snow_detector_python.git
-   cd snow_detector_python
-   ```
+```bash
+git clone https://github.com/chrishajduk84/snow_detector_python.git
+cd snow_detector_python
+poetry install
+```
 
-2. Create and activate a virtual environment (recommended):
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # Linux/Mac
-   # or
-   venv\Scripts\activate  # Windows
-   ```
+## Quick Start
 
-3. Install Python dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. Install the Infineon Radar SDK:
-   - Download the Radar Development Kit from [Infineon's website](https://www.infineon.com/cms/en/product/sensor/radar-sensors/radar-sensors-for-iot/60ghz-radar/demo-bgt60tr13c/)
-   - Follow Infineon's installation instructions to install the `ifxdaq` Python package
-   - The SDK includes necessary drivers for the radar board
-
-## Usage
-
-### Quick Start with Simulation Mode
-
-To test the application without radar hardware:
+### 1. Generate synthetic training data
 
 ```bash
-python main.py --simulate
+python main.py simulate --num-samples 1000
 ```
 
-### Running with Hardware
-
-Connect the DEMO-BGT60TR13C board via USB and run:
+### 2. Train the model
 
 ```bash
-python main.py
+python main.py train --epochs 100 --augment
 ```
 
-### Command Line Options
+### 3. Collect real data
 
-```
-Usage: python main.py [OPTIONS]
-
-Options:
-  --simulate          Run with simulated radar data (no hardware required)
-  --plot-type TYPE    Visualization type: time_domain, range_profile, 
-                      range_doppler, or all (default: all)
-  --samples N         Number of samples per chirp (default: 64)
-  --chirps N          Number of chirps per frame (default: 16)
-  --update-rate MS    Plot update interval in milliseconds (default: 50)
-```
-
-### Examples
+Place known materials (e.g. 5 cm HDPE with εr=2.3) in front of the radar:
 
 ```bash
-# Run simulation with all plot types
-python main.py --simulate --plot-type all
+python main.py collect --sensor bgt60 --layers "5cm:2.3:0.0004" --num-samples 100
+```
 
-# Show only range profile with hardware
-python main.py --plot-type range_profile
+Layer format: `<thickness><unit>:<εr>:<tan δ>`, comma-separated for multiple layers.
 
-# Custom configuration
-python main.py --simulate --samples 128 --chirps 32 --update-rate 100
+### 4. Live prediction
+
+```bash
+python main.py predict --sensor bgt60
+```
+
+### 5. Visualize a session
+
+```bash
+python main.py visualize data/real/session_20250101_120000.h5
 ```
 
 ## Project Structure
 
 ```
-snow_detector_python/
-├── main.py              # Main application entry point
-├── requirements.txt     # Python dependencies
-├── README.md           # This file
-└── src/
-    ├── __init__.py
-    ├── radar_interface.py  # Radar board interface module
-    └── live_plotter.py     # Real-time visualization module
+main.py                    CLI entry point
+configs/
+    bgt60tr13c.json        BGT60TR13C radar config
+    iwr1443.cfg            IWR1443 chirp config (TI CLI format)
+src/
+    sensors/               Sensor abstraction (base, bgt60, iwr1443)
+    data/                  HDF5 storage, PyTorch dataset, simulator
+    models/                1D U-Net property estimator + trainer
+    processing/            FFT, range profile, Doppler processing
+    visualization/         Plotting utilities
+data/
+    real/                  Collected measurement sessions (.h5)
+    synthetic/             Simulated training data (.h5)
+models/
+    best_model.pth         Trained model checkpoint
 ```
 
-## API Reference
+## IWR1443 Setup
 
-### RadarInterface
+For the TI IWR1443BOOST, specify both serial ports:
 
-```python
-from src.radar_interface import RadarInterface
-
-# Basic usage with context manager
-with RadarInterface() as radar:
-    radar.start_acquisition()
-    frame = radar.get_frame()  # Returns numpy array
-    radar.stop_acquisition()
-
-# Custom configuration
-config = {
-    "num_samples_per_chirp": 128,
-    "num_chirps_per_frame": 32,
-    "lower_frequency_hz": 60_000_000_000,
-    "upper_frequency_hz": 61_500_000_000,
-}
-radar = RadarInterface(config)
+```bash
+python main.py collect --sensor iwr1443 --cli-port COM3 --data-port COM4 \
+    --layers "5cm:2.3:0.0004"
 ```
 
-### LivePlotter
-
-```python
-from src.live_plotter import LivePlotter
-
-# Create plotter
-plotter = LivePlotter(
-    num_samples=64,
-    num_chirps=16,
-    plot_type="all"  # or "time_domain", "range_profile", "range_doppler"
-)
-
-# Push frame data
-plotter.push_frame(frame_data)
-
-# Start visualization
-plotter.start(blocking=True)
-```
-
-## Radar Configuration Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `sample_rate_hz` | 1,000,000 | ADC sample rate |
-| `num_samples_per_chirp` | 64 | Samples per chirp |
-| `num_chirps_per_frame` | 16 | Chirps per frame |
-| `lower_frequency_hz` | 60 GHz | Start frequency |
-| `upper_frequency_hz` | 61.5 GHz | End frequency |
-| `tx_power_level` | 31 | Transmit power (0-31) |
-| `if_gain_db` | 33 | IF amplifier gain |
-| `frame_repetition_time_s` | 0.1 | Time between frames |
-
-## Troubleshooting
-
-### "ifxdaq package not installed"
-The Infineon Radar SDK is not installed. Please download and install the Radar Development Kit from Infineon's website.
-
-### "Failed to connect to radar"
-- Ensure the DEMO-BGT60TR13C board is connected via USB
-- Check that the correct drivers are installed
-- Verify only one application is accessing the board
-
-### Plot not updating
-- Ensure data is being pushed to the plotter with `push_frame()`
-- Check that the plot window is in focus
-- Try reducing the update rate (increase `--update-rate` value)
+The board must be running TI's out-of-box demo firmware.
 
 ## License
 
-See LICENSE file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+MIT

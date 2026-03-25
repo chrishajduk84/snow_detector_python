@@ -1,5 +1,5 @@
-"""Snow Detector Python - Infineon DEMO-BGT60TR13C Radar Interface."""
+"""Snow Detector Python — Radar Dielectric Profiler.
 
-from .live_plotter import LivePlotter
-
-__all__ = ["LivePlotter"]
+Supports Infineon BGT60TR13C and TI IWR1443BOOST sensors for
+per-range-bin material property estimation (εr, tan δ).
+"""
