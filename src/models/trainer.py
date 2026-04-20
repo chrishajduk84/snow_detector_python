@@ -2,9 +2,9 @@
 
 Handles training loop, validation, checkpointing, and metrics.
 Loss is a weighted combination of:
-    - MSE on eps_r (permittivity regression)
-    - MSE on tan_delta (loss tangent regression)
-    - BCE on presence (binary material detection)
+    - Masked MSE on eps_r (permittivity regression, material bins only)
+    - Masked MSE on tan_delta (loss tangent regression, material bins only)
+    - Focal BCE on presence (binary material detection, rebalanced)
 """
 
 from pathlib import Path
@@ -51,8 +51,8 @@ class PropertyEstimatorTrainer:
             self.optimizer, T_max=100, eta_min=1e-6
         )
 
-        self.mse_loss = nn.MSELoss()
-        self.bce_loss = nn.BCELoss()
+        self.focal_alpha = 0.75  # weight for positive (material) class
+        self.focal_gamma = 2.0   # focusing parameter
 
         self.history: dict[str, list[float]] = {
             'train_loss': [],
@@ -135,15 +135,37 @@ class PropertyEstimatorTrainer:
         return self.history
 
     def _compute_loss(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """Compute weighted multi-task loss.
+        """Compute weighted multi-task loss with material-aware masking.
+
+        - eps_r and tan_delta regression only on material-present bins
+        - Focal loss for presence to handle air/material class imbalance
 
         Args:
             pred: (batch, 3, L) — [eps_r, tan_delta, presence]
             target: (batch, 3, L) — same layout
         """
-        eps_loss = self.mse_loss(pred[:, 0, :], target[:, 0, :])
-        tan_loss = self.mse_loss(pred[:, 1, :], target[:, 1, :])
-        presence_loss = self.bce_loss(pred[:, 2, :], target[:, 2, :])
+        presence_target = target[:, 2, :]  # (B, L)
+        material_mask = presence_target > 0.5  # True where material exists
+        num_material = material_mask.sum()
+
+        # Masked regression — only compute loss on material bins
+        if num_material > 0:
+            eps_loss = (pred[:, 0, :] - target[:, 0, :]).pow(2)[material_mask].mean()
+            tan_loss = (pred[:, 1, :] - target[:, 1, :]).pow(2)[material_mask].mean()
+        else:
+            eps_loss = torch.tensor(0.0, device=pred.device)
+            tan_loss = torch.tensor(0.0, device=pred.device)
+
+        # Focal loss for presence — downweights easy negatives (air bins)
+        presence_pred = pred[:, 2, :].clamp(1e-6, 1.0 - 1e-6)
+        bce = -(
+            presence_target * torch.log(presence_pred)
+            + (1 - presence_target) * torch.log(1 - presence_pred)
+        )
+        pt = presence_target * presence_pred + (1 - presence_target) * (1 - presence_pred)
+        alpha_t = presence_target * self.focal_alpha + (1 - presence_target) * (1 - self.focal_alpha)
+        focal_weight = alpha_t * (1 - pt).pow(self.focal_gamma)
+        presence_loss = (focal_weight * bce).mean()
 
         return (
             self.weight_eps * eps_loss
@@ -179,6 +201,7 @@ class PropertyEstimatorTrainer:
         total_loss = 0.0
         total_eps_ae = 0.0
         total_tan_ae = 0.0
+        total_material_bins = 0
         total_presence_correct = 0
         total_bins = 0
         count = 0
@@ -193,10 +216,16 @@ class PropertyEstimatorTrainer:
             total_loss += loss.item() * x.size(0)
             count += x.size(0)
 
-            # Per-bin metrics
+            # Metrics on material bins only (consistent with training loss)
+            material_mask = y[:, 2, :] > 0.5
+            n_material = material_mask.sum().item()
+            if n_material > 0:
+                total_eps_ae += (pred[:, 0, :] - y[:, 0, :]).abs()[material_mask].sum().item()
+                total_tan_ae += (pred[:, 1, :] - y[:, 1, :]).abs()[material_mask].sum().item()
+                total_material_bins += n_material
+
+            # Presence accuracy over all bins
             n_bins = pred.shape[2]
-            total_eps_ae += (pred[:, 0, :] - y[:, 0, :]).abs().sum().item()
-            total_tan_ae += (pred[:, 1, :] - y[:, 1, :]).abs().sum().item()
             total_presence_correct += (
                 ((pred[:, 2, :] > 0.5).float() == y[:, 2, :]).sum().item()
             )
@@ -204,8 +233,8 @@ class PropertyEstimatorTrainer:
 
         return {
             'loss': total_loss / count if count > 0 else 0.0,
-            'eps_mae': total_eps_ae / total_bins if total_bins > 0 else 0.0,
-            'tan_mae': total_tan_ae / total_bins if total_bins > 0 else 0.0,
+            'eps_mae': total_eps_ae / total_material_bins if total_material_bins > 0 else 0.0,
+            'tan_mae': total_tan_ae / total_material_bins if total_material_bins > 0 else 0.0,
             'presence_acc': total_presence_correct / total_bins if total_bins > 0 else 0.0,
         }
 

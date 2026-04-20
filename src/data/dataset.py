@@ -88,6 +88,11 @@ class DielectricProfileDataset(Dataset):
             channels[2 * rx] = frame[:, rx].real
             channels[2 * rx + 1] = frame[:, rx].imag
 
+        # Normalize by max magnitude so the model sees consistent input scales
+        max_val = np.max(np.abs(channels))
+        if max_val > 0:
+            channels /= max_val
+
         # labels: (num_bins, 3) → (3, num_bins)
         target = labels[:num_samples].T.astype(np.float32)
 
